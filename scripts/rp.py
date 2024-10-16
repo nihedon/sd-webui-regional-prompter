@@ -1,5 +1,6 @@
 import inspect
 import os.path
+import re
 from importlib import reload
 import launch
 from pprint import pprint
@@ -42,10 +43,14 @@ PTPRESET = modules.scripts.basedir()
 PTPRESETALT = os.path.join(paths.script_path, "scripts")
 
 try:
-    from ldm_patched.modules import model_management
-    forge = True
+    from modules_forge import forge_version
+    version = float(re.match(r"^(\d+(?:\.\d+)?)", forge_version.version).group())
+    forge, reforge = (True, False) if version >= 2 else (False, True)
 except:
-    forge = False
+    forge, reforge = (False, False)
+
+if forge:
+    from modules_forge.forge_canvas.canvas import ForgeCanvas
 
 def lange(l):
     return range(len(l))
@@ -93,7 +98,9 @@ def ui_tab(mode, submode, eladd):
                 overlay = gr.Slider(label="Overlay Ratio", minimum=0, maximum=1, step=0.1, value=0.5,elem_id="RP_matrix_overlay" + eladd)
 
             with gr.Column():
-                areasimg = gr.Image(type="pil", show_label  = False, height=256, width=256,source = "upload", interactive=True)
+                areasimg_param = {"type": "pil", "show_label": False, "height": 256, "width": 256, "interactive": True}
+                areasimg_param["sources" if forge else "source"] = "upload"
+                areasimg = gr.Image(**areasimg_param)
         # Need to add maketemp function based on base / common checks.
         vret = [mmode, ratios, maketemp, template, areasimg, flipper, thei, twid, overlay]
     elif mode == "Mask":
@@ -102,8 +109,11 @@ def ui_tab(mode, submode, eladd):
         with gr.Row(): # Creep: Placeholder, should probably make this invisible.
             xmode = gr.Radio(label="Mask mode", choices=submode, value="Mask", type="value", interactive=True,elem_id="RP_mask_mode" + eladd)
         with gr.Row(): # CREEP: Css magic to make the canvas bigger? I think it's in style.css: #img2maskimg -> height.
-            polymask = gr.Image(label = "Do not upload here until bugfix",elem_id="polymask" + eladd,
-                                source = "upload", mirror_webcam = False, type = "numpy", tool = "sketch")#.style(height=480)
+            if forge:
+                polymask = ForgeCanvas(elem_id="polymask" + eladd, numpy=True, scribble_width=1, scribble_color_fixed=True, scribble_alpha_fixed=True, scribble_softness_fixed=True)
+            else:
+                polymask = gr.Image(label="Do not upload here until bugfix", elem_id="polymask" + eladd,
+                                    source="upload", mirror_webcam=False, type="numpy", tool="sketch")#.style(height=480)
         with gr.Row():
             with gr.Column():
                 num = gr.Slider(label="Region", minimum=-1, maximum=MAXCOLREG, step=1, value=1,elem_id="RP_mask_region" + eladd)
@@ -113,15 +123,26 @@ def ui_tab(mode, submode, eladd):
                 # btn2 = gr.Button(value = "Display mask") # Not needed.
                 cbtn = gr.Button(value="Create mask area")
             with gr.Column():
-                showmask = gr.Image(label = "Mask", shape=(IDIM, IDIM))
+                if forge:
+                    showmask = gr.Image(label="Mask")
+                else:
+                    showmask = gr.Image(label="Mask", shape=(IDIM, IDIM))
+
                 # CONT: Awaiting fix for https://github.com/gradio-app/gradio/issues/4088.
-                uploadmask = gr.Image(label="Upload mask here cus gradio",source = "upload", type = "numpy")
+                uploadmask_param = {"label": "Upload mask here cus gradio", "type": "numpy"}
+                uploadmask_param["sources" if forge else "source"] = "upload"
+                uploadmask = gr.Image(**uploadmask_param)
         # btn.click(detect_polygons, inputs = [polymask,num], outputs = [polymask,num])
-        btn.click(draw_region, inputs = [polymask, num], outputs = [polymask, num, showmask])
-        # btn2.click(detect_mask, inputs = [polymask,num], outputs = [showmask])
-        cbtn.click(fn=create_canvas, inputs=[canvas_height, canvas_width], outputs=[polymask])
-        uploadmask.upload(fn = draw_image, inputs = [uploadmask], outputs = [polymask, uploadmask, showmask])
-        
+        if forge:
+            btn.click(draw_region, inputs = [polymask.background, polymask.foreground, num], outputs = [polymask.foreground, polymask.background, num, showmask])
+            cbtn.click(fn=create_canvas, inputs=[canvas_height, canvas_width], outputs=[polymask.background, polymask.foreground])
+            uploadmask.upload(fn = draw_image, inputs = [uploadmask], outputs = [polymask.background, polymask.foreground, uploadmask, showmask])
+        else:
+            btn.click(draw_region, inputs = [polymask, num], outputs = [polymask, num, showmask])
+            # btn2.click(detect_mask, inputs = [polymask,num], outputs = [showmask])
+            cbtn.click(fn=create_canvas, inputs=[canvas_height, canvas_width], outputs=[polymask])
+            uploadmask.upload(fn = draw_image, inputs = [uploadmask], outputs = [polymask, uploadmask, showmask])
+
         vret = [xmode, polymask, num, canvas_width, canvas_height, btn, cbtn, showmask, uploadmask]
     elif mode == "Prompt":
         with gr.Row():
@@ -270,8 +291,16 @@ class Script(modules.scripts.Script):
                 active = gr.Checkbox(value=False, label="Active",interactive=True,elem_id="RP_active" + eladd)
                 urlguide = gr.HTML(value = fhurl(GUIDEURL, "Usage guide"))
             with gr.Row():
-                #smode = gr.Radio(label="Divide mode", choices=["Horizontal", "Vertical","Mask","Prompt","Prompt-Ex"], value="Horizontal",  type="value", interactive=True)
-                calcmode = gr.Radio(label="Generation Mode", choices=["Attention", "Latent"], value="Attention",  type="value", interactive=True, elem_id="RP_generation_mode" + eladd,)
+                with gr.Column():
+                    #smode = gr.Radio(label="Divide mode", choices=["Horizontal", "Vertical","Mask","Prompt","Prompt-Ex"], value="Horizontal",  type="value", interactive=True)
+                    calcmode_choces = ["Attention"]
+                    if forge or reforge:
+                        calcmode_choces.append("Latent(Disabled)")
+                    else:
+                        calcmode_choces.append("Latent")
+                    calcmode = gr.Radio(label="Generation Mode", choices=calcmode_choces, value="Attention",  type="value", interactive=True, elem_id="RP_generation_mode" + eladd,)
+                    if forge or reforge:
+                        gr.HTML(value="<p style='color: var(--error-text-color);'>\"Latent\" is not currently supported in Forge.</p>")
             with gr.Row(visible=True):
                 # ratios = gr.Textbox(label="Divide Ratio",lines=1,value="1,1",interactive=True,elem_id="RP_divide_ratio",visible=True)
                 baseratios = gr.Textbox(label="Base Ratio", lines=1,value="0.2",interactive=True,  elem_id="RP_base_ratio" + eladd, visible=True)
@@ -326,7 +355,10 @@ class Script(modules.scripts.Script):
                 return gr.Tabs.update(selected="t"+mode)
 
             mode.change(fn = changetabs,inputs=[mode],outputs=[tabs])
-            settings = [rp_selected_tab, mmode, xmode, pmode, ratios, baseratios, usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper]
+            if forge:
+                settings = [rp_selected_tab, mmode, xmode, pmode, ratios, baseratios, usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask.background, polymask.foreground, lstop, lstop_hr, flipper]
+            else:
+                settings = [rp_selected_tab, mmode, xmode, pmode, ratios, baseratios, usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper]
         
         self.infotext_fields = [
                 (active, "RP Active"),
@@ -383,11 +415,22 @@ class Script(modules.scripts.Script):
         applypresets.click(fn=setpreset, inputs = [availablepresets, *settings], outputs=settings)
         savesets.click(fn=savepresets, inputs = [presetname,*settings],outputs=availablepresets)
         
-        return [active, dummy_false, rp_selected_tab, mmode, xmode, pmode, ratios, baseratios,
-                usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper]
+        if forge:
+            return [active, dummy_false, rp_selected_tab, mmode, xmode, pmode, ratios, baseratios,
+                    usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask.background, polymask.foreground, lstop, lstop_hr, flipper]
+        else:
+            return [active, dummy_false, rp_selected_tab, mmode, xmode, pmode, ratios, baseratios,
+                    usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper]
 
-    def process(self, p, active, a_debug , rp_selected_tab, mmode, xmode, pmode, aratios, bratios,
-                usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper):
+    def process(self, *args):
+
+        if forge:
+            p, active, a_debug , rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                    usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask_background, polymask_foreground, lstop, lstop_hr, flipper = args
+            polymask = {"image": polymask_background, "mask": polymask_foreground}
+        else:
+            p, active, a_debug , rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                    usebase, usecom, usencom, calcmode, options, lnter, lnur, threshold, polymask, lstop, lstop_hr, flipper = args
 
         if type(options) is bool:
             options = ["disable convert 'AND' to 'BREAK'"] if options else []
@@ -473,7 +516,7 @@ class Script(modules.scripts.Script):
 
         # SBM ddim / plms detection.
         self.isvanilla = p.sampler_name in ["DDIM", "PLMS", "UniPC"]
-        if forge: self.isvanilla = not self.isvanilla
+        if forge or reforge: self.isvanilla = not self.isvanilla
 
         if self.h % ATTNSCALE != 0 or self.w % ATTNSCALE != 0:
             # Testing shows a round down occurs in model.
@@ -497,7 +540,12 @@ class Script(modules.scripts.Script):
             keyconverter(aratios, self.mode, usecom, usebase, p) #convert BREAKs to ADDROMM/ADDCOL/ADDROW
         bckeydealer(self, p)                                                      #detect COMM/BASE keys
         keycounter(self, p)                                                       #count keys and set to self.divide
-            
+
+        if forge or reforge:
+            model = p.sd_model.forge_objects.unet.model
+        else:
+            model = p.sd_model.model
+
         if "Pro" not in self.mode: # skip region assign in prompt mode
             ##### region mode
             if "Mask" in self.mode:
@@ -509,22 +557,22 @@ class Script(modules.scripts.Script):
     
             ##### calcmode 
             if "Att" in calcmode:
-                self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+                self.handle = hook_forwards(self, model.diffusion_model)
                 if hasattr(shared.opts,"batch_cond_uncond"):
                     shared.opts.batch_cond_uncond = orig_batch_cond_uncond
                 else:                    
                     shared.batch_cond_uncond = orig_batch_cond_uncond
                 unloadlorafowards(p)
             else:
-                self.handle = hook_forwards(self, p.sd_model.model.diffusion_model,remove = True)
-                setuploras(self)
+                self.handle = hook_forwards(self, model.diffusion_model,remove = True)
+                setuploras(self, p)
                 # SBM It is vital to use local activation because callback registration is permanent,
                 # and there are multiple script instances (txt2img / img2img). 
 
         elif "Pro" in self.mode: #Prompt mode use both calcmode
             self.ex = "Ex" in self.mode
             if not usebase : bratios = "0"
-            self.handle = hook_forwards(self, p.sd_model.model.diffusion_model)
+            self.handle = hook_forwards(self, model.diffusion_model)
             denoiserdealer(self)
 
         neighbor(self,p)                                                    #detect other extention
@@ -550,8 +598,15 @@ class Script(modules.scripts.Script):
             self.current_prompts = kwargs["prompts"].copy()
             p.disable_extra_networks = False
 
-    def before_hr(self, p, active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios,
-                      usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, threshold, polymask,lstop, lstop_hr, flipper):
+    def before_hr(self, p, *args):
+        if forge:
+            active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                      usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, \
+                      threshold, polymask_background, polymask_foreground, lstop, lstop_hr, flipper = args
+        else:
+            active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                      usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, \
+                      threshold, polymask, lstop, lstop_hr, flipper = args
         if self.active:
             self.in_hr = True
             if "La" in self.calc:
@@ -563,8 +618,16 @@ class Script(modules.scripts.Script):
                 except:
                     pass
 
-    def process_batch(self, p, active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios,
-                      usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, threshold, polymask,lstop, lstop_hr,flipper,**kwargs):
+    def process_batch(self, *args, **kwargs):
+        if forge:
+            p, active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                    usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, \
+                    threshold, polymask_background, polymask_foreground, lstop, lstop_hr, flipper = args
+        else:
+            p, active, _, rp_selected_tab, mmode, xmode, pmode, aratios, bratios, \
+                    usebase, usecom, usencom, calcmode,nchangeand, lnter, lnur, \
+                    threshold, polymask, lstop, lstop_hr, flipper = args
+
         # print(kwargs["prompts"])
 
         if self.active:
@@ -616,9 +679,14 @@ class Script(modules.scripts.Script):
         denoised_callback_s(self, params)
 
 def unloader(self,p):
+    if forge or reforge:
+        model = p.sd_model.forge_objects.unet.model
+    else:
+        model = p.sd_model.model
+
     if hasattr(self,"handle"):
         #print("unloaded")
-        hook_forwards(self, p.sd_model.model.diffusion_model, remove=True)
+        hook_forwards(self, model.diffusion_model, remove=True)
         del self.handle
 
     self.__init__()
@@ -721,7 +789,10 @@ def tokendealer(self, p):
 
     padd = 0
     
-    tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
+    if forge:
+        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.text_processing_engine_g.tokenize_line
+    else:
+        tokenizer = shared.sd_model.conditioner.embedders[0].tokenize_line if self.isxl else shared.sd_model.cond_stage_model.tokenize_line
 
     for pp in ppl:
         tokens, tokensnum = tokenizer(pp)
