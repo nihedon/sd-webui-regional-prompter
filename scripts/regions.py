@@ -1,3 +1,4 @@
+import re
 import colorsys  # Polygon regions.
 from PIL import Image, ImageChops
 from pprint import pprint
@@ -7,6 +8,13 @@ import numpy as np
 import PIL
 import torch
 from modules import devices
+
+try:
+    from modules_forge import forge_version
+    version = float(re.match(r"^(\d+(?:\.\d+)?)", forge_version.version).group())
+    forge, reforge = (True, False) if version >= 2 else (False, True)
+except:
+    forge, reforge = (False, False)
 
 def lange(l):
     return range(len(l))
@@ -645,7 +653,7 @@ def detect_polygons(img,num):
     contours, hierarchy = cv2.findContours(bimg, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     #img2 = np.zeros_like(img) + 255 # Fresh image.
-    img2 = out # Update current image.
+    img2 = out.copy() # Update current image.
 
     if num < 0:
         color = COLWHITE
@@ -672,6 +680,9 @@ def detect_polygons(img,num):
     #img2 = cv2.cvtColor(img2, cv2.COLOR_GRAY2RGB) # Converting to grayscale is dumb.
 
     skimg = create_canvas(img2.shape[0], img2.shape[1], indwipe = False)
+    if forge:
+        skimg = skimg[0]
+
     if VARIANT != 0:
         skimg[:-VARIANT,:-VARIANT,:] = img2
     else:
@@ -692,6 +703,8 @@ def detect_mask(img, num, mult = CBLACK):
         pass
     if img is None:
         return None
+    if forge:
+        img = img[:, :, :3]
     indnot = False
     if num < 0: # Detect unmasked region.
         if INDCOLREPL: # In replacement mode, all colours are either region or white.
@@ -714,18 +727,31 @@ def detect_mask(img, num, mult = CBLACK):
         REGUSE[num] = color.reshape(-1).tolist()
     return mask
 
-def draw_region(img, num):
+def draw_region(*args):
     """Simply runs polygon detection, followed by mask on result.
     
     Saves extra inconvenient button. Since num is auto incremented, we take the old val.
     """
+    if forge:
+        background, foreground_rgba, num = args
+        foreground = np.zeros((foreground_rgba.shape[0], foreground_rgba.shape[1], 3), dtype=np.uint8)
+        foreground[foreground_rgba[:, :, 3] == 255] = [255, 255, 255]
+        foreground[foreground_rgba[:, :, 3] == 0] = [0, 0, 0]
+        img = {"image": background, "mask": foreground}
+    else:
+        img, num = args
     img, num2 = detect_polygons(img, num)
     mask = detect_mask(img, num)
     # Gradio is stupid, I have to force feed it a dict so preprocess doesn't break.
     # Disabled here, can only be fixed reliably in preprocess.
     # dimg = {"image":img, "mask": None}
     dimg = img
-    return dimg, num2, mask
+    if forge:
+        h = dimg.shape[0]
+        w = dimg.shape[1]
+        return np.zeros(shape = (h, w, CCHANNELS+1), dtype = np.uint8), dimg, num2, mask
+    else:
+        return dimg, num2, mask
 
 def draw_image(img, inddict = False):
     """Runs colour detection followed by mask on -1 to show which colours are regions.
@@ -744,11 +770,17 @@ def create_canvas(h, w, indwipe = True):
     """
     global VARIANT
     global REGUSE
-    VARIANT = 1 - VARIANT
+    if not forge:
+        VARIANT = 1 - VARIANT
     if indwipe:
         REGUSE = dict()
-    vret =  np.zeros(shape = (h + VARIANT, w + VARIANT, CCHANNELS), dtype = np.uint8) + CBLACK
-    return vret
+    if forge:
+        back =  np.zeros(shape = (h, w, CCHANNELS), dtype = np.uint8) + CBLACK
+        front =  np.zeros(shape = (h, w, CCHANNELS+1), dtype = np.uint8)
+        return back, front
+    else:
+        vret =  np.zeros(shape = (h + VARIANT, w + VARIANT, CCHANNELS), dtype = np.uint8) + CBLACK
+        return vret
 
 # SBM In mask mode, grabs each mask from coloured mask image.
 # If there's no base, remainder goes to first mask.

@@ -1,6 +1,6 @@
 import math
+import re
 from pprint import pprint
-import ldm.modules.attention as atm
 import torch
 import torchvision
 import torchvision.transforms.functional as F
@@ -8,6 +8,19 @@ from torchvision.transforms import InterpolationMode, Resize  # Mask.
 
 TOKENSCON = 77
 TOKENS = 75
+
+try:
+    from modules_forge import forge_version
+    version = float(re.match(r"^(\d+(?:\.\d+)?)", forge_version.version).group())
+    forge, reforge = (True, False) if version >= 2 else (False, True)
+except:
+    forge, reforge = (False, False)
+
+if forge:
+    import backend.nn.unet as atm
+    atm.einsum = torch.einsum
+else:
+    import ldm.modules.attention as atm
 
 def db(self,text):
     if self.debug:

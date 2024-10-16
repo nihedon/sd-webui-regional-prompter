@@ -26,12 +26,13 @@ MAXID = 10000
 LORAID = MINID # Discriminator for repeated lora usage / across gens, presumably.
 
 try:
-    from ldm_patched.modules import model_management
-    forge = True
+    from modules_forge import forge_version
+    version = float(re.match(r"^(\d+(?:\.\d+)?)", forge_version.version).group())
+    forge, reforge = (True, False) if version >= 2 else (False, True)
 except:
-    forge = False
+    forge, reforge = (False, False)
 
-def setuploras(self):
+def setuploras(self, p):
     global lactive, labug, islora, orig_Linear_forward, orig_lora_functional, layer_name
     lactive = True
     labug = self.debug
@@ -48,8 +49,13 @@ def setuploras(self):
         pass
 
     is15 = 150 <= self.ui_version <= 159
-    orig_Linear_forward = torch.nn.Linear.forward
-    torch.nn.Linear.forward = h15_Linear_forward if is15 else h_Linear_forward
+    if forge:
+        # orig_Linear_forward = torch.nn.functional.linear
+        # torch.nn.functional.linear = h15_Linear_forward_forge if is15 else h_Linear_forward_forge
+        orig_Linear_forward = None
+    else:
+        orig_Linear_forward = torch.nn.Linear.forward
+        torch.nn.Linear.forward = h15_Linear_forward if is15 else h_Linear_forward
 
 def cloneparams(orig,target):
     target.x = orig.x.clone()
@@ -485,12 +491,32 @@ regioner = LoRARegioner()
 ############################################################
 ##### for new lora apply method in web-ui
 
+def h_Linear_forward_forge(input, weight, bias = None):
+    # F = torch.nn.functional
+    # changethelora(getattr(F, layer_name, None))
+    # if islora:
+    #     import lora
+    #     return lora.lora_forward(F, input, torch.nn.Linear_forward_before_lora)
+    # else:
+    #     return orig_Linear_forward(input, weight, bias)
+    pass
+
+def h15_Linear_forward_forge(input, weight, bias = None):
+    # F = torch.nn.functional
+    # changethelora(getattr(F, layer_name, None))
+    # if islora:
+    #     import lora
+    #     return lora.lora_forward(F, input, torch.nn.Linear_forward_before_lora)
+    # else:
+    #     return orig_Linear_forward(input, weight, bias)
+    pass
+
 def h_Linear_forward(self, input):
     changethelora(getattr(self, layer_name, None))
     if islora:
         import lora
         return lora.lora_forward(self, input, torch.nn.Linear_forward_before_lora)
-    elif forge:
+    elif reforge:
         return orig_Linear_forward(self, input)
     else:
         import networks
@@ -570,7 +596,11 @@ def unloadlorafowards(p):
     except:
         pass
 
-    emb_db = sd_hijack.model_hijack.embedding_db
+    if forge:
+        from modules import ui_extra_networks_textual_inversion
+        emb_db = ui_extra_networks_textual_inversion.embedding_db
+    else:
+        emb_db = sd_hijack.model_hijack.embedding_db
     import lora
     for net in lora.loaded_loras:
         if hasattr(net,"bundle_embeddings"):
@@ -580,5 +610,8 @@ def unloadlorafowards(p):
 
     lora.loaded_loras.clear()
     if orig_Linear_forward != None :
-        torch.nn.Linear.forward = orig_Linear_forward
+        if forge:
+            torch.nn.functional.linear = orig_Linear_forward
+        else:
+            torch.nn.Linear.forward = orig_Linear_forward
         orig_Linear_forward = None
